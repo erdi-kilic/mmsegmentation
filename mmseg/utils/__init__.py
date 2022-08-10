@@ -4,8 +4,13 @@ from .logger import get_root_logger
 from .misc import find_latest_checkpoint
 from .set_env import setup_multi_processes
 from .util_distribution import build_ddp, build_dp, get_device
+from .checkpoint import load_checkpoint
+from .optimizer import (ApexOptimizerHook, GradientCumulativeOptimizerHook, GradientCumulativeFp16OptimizerHook)
+from .customized_text import CustomizedTextLoggerHook
+from .layer_decay_optimizer_constructor import LearningRateDecayOptimizerConstructor
 
 __all__ = [
     'get_root_logger', 'collect_env', 'find_latest_checkpoint',
-    'setup_multi_processes', 'build_ddp', 'build_dp', 'get_device'
+    'setup_multi_processes', 'build_ddp', 'build_dp', 'get_device',
+'load_checkpoint', 'ApexOptimizerHook', 'GradientCumulativeOptimizerHook', 'GradientCumulativeFp16OptimizerHook', 'CustomizedTextLoggerHook', 'LearningRateDecayOptimizerConstructor'
 ]
