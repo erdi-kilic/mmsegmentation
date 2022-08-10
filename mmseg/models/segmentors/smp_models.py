@@ -4,14 +4,74 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from mmseg.core import add_prefix
+from mmseg.core.seg.builder import build_pixel_sampler
+from mmseg.models.utils.transunet import TransUnetEncoderWrapper
 from mmseg.ops import resize
-from .. import builder
-from ..builder import SEGMENTORS
-from .base import BaseSegmentor
+from mmcv.runner import BaseModule, auto_fp16, force_fp32
 
+from .base import BaseSegmentor
+from ..losses import accuracy
+from ..builder import SEGMENTORS, build_loss, build_backbone
+from ..utils import TransUnetEncoderWrapper
+
+import segmentation_models_pytorch as smp
+
+class SwinWrapper(nn.Module):
+    def __init__(self, encoder_name, in_channels = 3, weights = None):
+        super(SwinWrapper, self).__init__()
+        configs = {
+            "swin_tiny": dict(
+                embed_dims=96,
+                depths=[2, 2, 6, 2],
+                num_heads=[3, 6, 12, 24],
+                window_size=7,
+                use_abs_pos_embed=False,
+                drop_path_rate=0.3,
+                patch_norm=True
+            ),
+            "swin_small": dict(
+                embed_dims=96,
+                depths=[2, 2, 18, 2],
+                num_heads=[3, 6, 12, 24],
+                window_size=7,
+                use_abs_pos_embed=False,
+                drop_path_rate=0.3,
+                patch_norm=True
+            ),
+            "swin_base": dict(
+                embed_dims=128,
+                depths=[2, 2, 18, 2],
+                num_heads=[4, 8, 16, 32],
+                window_size=7,
+                use_abs_pos_embed=False,
+                drop_path_rate=0.3,
+                patch_norm=True
+            ),
+        }
+        out_channels = {
+            "swin_tiny": [96, 192, 384, 768],
+            "swin_small": [96, 192, 384, 768],
+            "swin_base": [128, 256, 512, 1024]
+        }
+        config = configs[encoder_name]
+        config["type"] = "SwinTransformer"
+        config["in_channels"] = in_channels
+        config["pretrained"] = weights
+        if "384" in weights:
+            config["window_size"] = 12
+            config["pretrain_img_size"] = 384
+        else:
+            assert "224" in weights, Exception("need a weight path with valid pretrained image size")
+        self.model = build_backbone(config)
+        self.out_channels = [in_channels,] + out_channels[encoder_name]
+
+    def forward(self, x):
+        outs = [x]
+        outs.extend(self.model(x))
+        return outs
 
 @SEGMENTORS.register_module()
-class EncoderDecoder(BaseSegmentor):
+class SMPUnet(BaseSegmentor):
     """Encoder Decoder segmentors.
 
     EncoderDecoder typically consists of backbone, decode_head, auxiliary_head.
@@ -26,45 +86,117 @@ class EncoderDecoder(BaseSegmentor):
                  auxiliary_head=None,
                  train_cfg=None,
                  test_cfg=None,
+                 ignore_index=255,
                  pretrained=None,
                  init_cfg=None):
-        super(EncoderDecoder, self).__init__(init_cfg)
-        if pretrained is not None:
-            assert backbone.get('pretrained') is None, \
-                'both backbone and segmentor set pretrained weight'
-            backbone.pretrained = pretrained
-        self.backbone = builder.build_backbone(backbone)
-        if neck is not None:
-            self.neck = builder.build_neck(neck)
-        self._init_decode_head(decode_head)
-        self._init_auxiliary_head(auxiliary_head)
+        super(SMPUnet, self).__init__(init_cfg)
+        encoder_name = backbone.get("type")
+        in_channels = backbone.get("in_channels", 3)
+        encoder_weights = backbone.get("pretrained", "imagenet")
+        encoder_depth = backbone.get("depth", 5)
+        decoder_channels = decode_head.get("channels", (256, 128, 64, 32, 16))
+        decoder_use_batchnorm = decode_head.get("use_batchnorm", True)
+        decoder_attention_type = decode_head.get("attention_type", None)
+        classes = decode_head.get("num_classes", 1)
+        activation = decode_head.get("activation", None)
+
+        if "swin" in encoder_name:
+            self.backbone = SwinWrapper(
+                encoder_name,
+                in_channels=in_channels,
+                weights=encoder_weights,
+            )
+            encoder_depth = 4
+        else:
+            self.backbone = smp.encoders.get_encoder(
+                encoder_name,
+                in_channels=in_channels,
+                depth=encoder_depth,
+                weights=encoder_weights,
+            )
+
+        transunet = backbone.get("transunet", None)
+        if transunet is not None:
+            self.backbone = TransUnetEncoderWrapper(self.backbone, transunet)
+
+        self.decode_head = smp.unet.decoder.UnetDecoder(
+            encoder_channels=self.backbone.out_channels,
+            decoder_channels=decoder_channels[:encoder_depth],
+            n_blocks=encoder_depth,
+            use_batchnorm=decoder_use_batchnorm,
+            center=True if encoder_name.startswith("vgg") else False,
+            attention_type=decoder_attention_type,
+        )
+
+        self.segmentation_head = smp.base.SegmentationHead(
+            in_channels=decoder_channels[:encoder_depth][-1],
+            out_channels=classes,
+            activation=activation,
+            kernel_size=3,
+        )
+
+
+        self.align_corners = decode_head.get("align_corners", 1)
+        self.num_classes = decode_head.get("num_classes", 1)
+        if decode_head.get("sampler", False):
+            self.sampler = build_pixel_sampler(decode_head["sampler"], context=self)
+        else:
+            self.sampler = None
+        self.ignore_index = ignore_index
+
+
+        loss_decode = decode_head.get("loss_decode", None)
+        if isinstance(loss_decode, dict):
+            self.loss_decode = build_loss(loss_decode)
+        elif isinstance(loss_decode, (list, tuple)):
+            self.loss_decode = nn.ModuleList()
+            for loss in loss_decode:
+                self.loss_decode.append(build_loss(loss))
+        else:
+            raise TypeError(f'loss_decode must be a dict or sequence of dict,\
+                but got {type(loss_decode)}')
 
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
 
-        assert self.with_decode_head
+    @force_fp32(apply_to=('seg_logit', ))
+    def losses(self, seg_logit, seg_label):
+        """Compute segmentation loss."""
+        loss = dict()
+        seg_logit = resize(
+            input=seg_logit,
+            size=seg_label.shape[2:],
+            mode='bilinear',
+            align_corners=self.align_corners)
+        if self.sampler is not None:
+            seg_weight = self.sampler.sample(seg_logit, seg_label)
+        else:
+            seg_weight = None
+        seg_label = seg_label.squeeze(1)
 
-    def _init_decode_head(self, decode_head):
-        """Initialize ``decode_head``"""
-        self.decode_head = builder.build_head(decode_head)
-        self.align_corners = self.decode_head.align_corners
-        self.num_classes = self.decode_head.num_classes
-
-    def _init_auxiliary_head(self, auxiliary_head):
-        """Initialize ``auxiliary_head``"""
-        if auxiliary_head is not None:
-            if isinstance(auxiliary_head, list):
-                self.auxiliary_head = nn.ModuleList()
-                for head_cfg in auxiliary_head:
-                    self.auxiliary_head.append(builder.build_head(head_cfg))
+        if not isinstance(self.loss_decode, nn.ModuleList):
+            losses_decode = [self.loss_decode]
+        else:
+            losses_decode = self.loss_decode
+        for loss_decode in losses_decode:
+            if loss_decode.loss_name not in loss:
+                loss[loss_decode.loss_name] = loss_decode(
+                    seg_logit,
+                    seg_label,
+                    weight=seg_weight,
+                    ignore_index=self.ignore_index)
             else:
-                self.auxiliary_head = builder.build_head(auxiliary_head)
+                loss[loss_decode.loss_name] += loss_decode(
+                    seg_logit,
+                    seg_label,
+                    weight=seg_weight,
+                    ignore_index=self.ignore_index)
+        loss['acc_seg'] = accuracy(seg_logit, seg_label)
+        return loss
 
     def extract_feat(self, img):
         """Extract features from images."""
         x = self.backbone(img)
-        if self.with_neck:
-            x = self.neck(x)
         return x
 
     def encode_decode(self, img, img_metas):
@@ -83,9 +215,8 @@ class EncoderDecoder(BaseSegmentor):
         """Run forward function and calculate loss for decode head in
         training."""
         losses = dict()
-        loss_decode = self.decode_head.forward_train(x, img_metas,
-                                                     gt_semantic_seg,
-                                                     self.train_cfg)
+        seg_logits = self._decode_head_forward_test(x, img_metas)
+        loss_decode = self.losses(seg_logits, gt_semantic_seg)
 
         losses.update(add_prefix(loss_decode, 'decode'))
         return losses
@@ -93,25 +224,8 @@ class EncoderDecoder(BaseSegmentor):
     def _decode_head_forward_test(self, x, img_metas):
         """Run forward function and calculate loss for decode head in
         inference."""
-        seg_logits = self.decode_head.forward_test(x, img_metas, self.test_cfg)
+        seg_logits = self.segmentation_head(self.decode_head(*x))
         return seg_logits
-
-    def _auxiliary_head_forward_train(self, x, img_metas, gt_semantic_seg):
-        """Run forward function and calculate loss for auxiliary head in
-        training."""
-        losses = dict()
-        if isinstance(self.auxiliary_head, nn.ModuleList):
-            for idx, aux_head in enumerate(self.auxiliary_head):
-                loss_aux = aux_head.forward_train(x, img_metas,
-                                                  gt_semantic_seg,
-                                                  self.train_cfg)
-                losses.update(add_prefix(loss_aux, f'aux_{idx}'))
-        else:
-            loss_aux = self.auxiliary_head.forward_train(
-                x, img_metas, gt_semantic_seg, self.train_cfg)
-            losses.update(add_prefix(loss_aux, 'aux'))
-
-        return losses
 
     def forward_dummy(self, img):
         """Dummy forward function."""
@@ -143,11 +257,6 @@ class EncoderDecoder(BaseSegmentor):
         loss_decode = self._decode_head_forward_train(x, img_metas,
                                                       gt_semantic_seg)
         losses.update(loss_decode)
-
-        if self.with_auxiliary_head:
-            loss_aux = self._auxiliary_head_forward_train(
-                x, img_metas, gt_semantic_seg)
-            losses.update(loss_aux)
 
         return losses
 
@@ -189,9 +298,6 @@ class EncoderDecoder(BaseSegmentor):
                 count_mat.cpu().detach().numpy()).to(device=img.device)
         preds = preds / count_mat
         if rescale:
-            # remove padding area
-            resize_shape = img_meta[0]['img_shape'][:2]
-            preds = preds[:, :, :resize_shape[0], :resize_shape[1]]
             preds = resize(
                 preds,
                 size=img_meta[0]['ori_shape'][:2],
@@ -209,9 +315,6 @@ class EncoderDecoder(BaseSegmentor):
             if torch.onnx.is_in_onnx_export():
                 size = img.shape[2:]
             else:
-                # remove padding area
-                resize_shape = img_meta[0]['img_shape'][:2]
-                seg_logit = seg_logit[:, :, :resize_shape[0], :resize_shape[1]]
                 size = img_meta[0]['ori_shape'][:2]
             if 'pad_shape' in img_meta[0] and img_meta[0]["pad_shape"] != img_meta[0]["img_shape"]:
                 seg_logit = seg_logit[...,:img_meta[0]["img_shape"][0],:img_meta[0]["img_shape"][1]]
@@ -251,10 +354,9 @@ class EncoderDecoder(BaseSegmentor):
         losses = {}
         if 'gt_semantic_seg' in kwargs:
             gt_semantic_seg = kwargs['gt_semantic_seg']
-            loss_decode = self.decode_head.losses(seg_logit, gt_semantic_seg)
+            loss_decode = self.losses(seg_logit, gt_semantic_seg)
 
             losses.update(add_prefix(loss_decode, 'decode'))
-
         if not self.test_cfg.get("multi_label", False):
             output = F.softmax(seg_logit, dim=1)
         else:
@@ -293,7 +395,7 @@ class EncoderDecoder(BaseSegmentor):
         seg_pred = seg_pred.cpu().numpy()
         # unravel batch dim
         seg_pred = list(seg_pred)
-        
+
         return seg_pred, losses
 
     def aug_test(self, imgs, img_metas, rescale=True, **kwargs):
@@ -330,3 +432,31 @@ class EncoderDecoder(BaseSegmentor):
         # unravel batch dim
         seg_pred = list(seg_pred)
         return seg_pred, losses
+
+@SEGMENTORS.register_module()
+class SMPUnetPlusPlus(SMPUnet):
+    def __init__(self,
+                 backbone,
+                 decode_head,
+                 neck=None,
+                 auxiliary_head=None,
+                 train_cfg=None,
+                 test_cfg=None,
+                 ignore_index=255,
+                 pretrained=None,
+                 init_cfg=None):
+        super(SMPUnetPlusPlus, self).__init__(backbone, decode_head, neck, auxiliary_head, train_cfg, test_cfg, ignore_index, pretrained, init_cfg)
+        encoder_name = backbone.get("type")
+        encoder_depth = backbone.get("depth", 5)
+        decoder_channels = decode_head.get("channels", (256, 128, 64, 32, 16))
+        decoder_use_batchnorm = decode_head.get("use_batchnorm", True)
+        decoder_attention_type = decode_head.get("attention_type", None)
+
+        self.decode_head = smp.unetplusplus.decoder.UnetPlusPlusDecoder(
+            encoder_channels=self.backbone.out_channels,
+            decoder_channels=decoder_channels[:encoder_depth],
+            n_blocks=encoder_depth,
+            use_batchnorm=decoder_use_batchnorm,
+            center=True if encoder_name.startswith("vgg") else False,
+            attention_type=decoder_attention_type,
+        )
