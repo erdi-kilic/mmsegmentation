@@ -1,12 +1,17 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+import os
 import os.path as osp
 import warnings
 from collections import OrderedDict
+from functools import reduce
+from PIL import Image
+import cv2
 
 import mmcv
 import numpy as np
 from mmcv.utils import print_log
 from prettytable import PrettyTable
+import torch
 from torch.utils.data import Dataset
 
 from mmseg.core import eval_metrics, intersect_and_union, pre_eval_to_metrics
@@ -42,7 +47,7 @@ class CustomDataset(Dataset):
     ``xxx{img_suffix}`` and ``xxx{seg_map_suffix}`` (extension is also included
     in the suffix). If split is given, then ``xxx`` is specified in txt file.
     Otherwise, all files in ``img_dir/``and ``ann_dir`` will be loaded.
-    Please refer to ``docs/en/tutorials/new_dataset.md`` for more details.
+    Please refer to ``docs/tutorials/new_dataset.md`` for more details.
 
 
     Args:
@@ -88,16 +93,32 @@ class CustomDataset(Dataset):
                  test_mode=False,
                  ignore_index=255,
                  reduce_zero_label=False,
+                 keep_empty_prob=1.,
                  classes=None,
                  palette=None,
                  gt_seg_map_loader_cfg=None,
-                 file_client_args=dict(backend='disk')):
-        self.pipeline = Compose(pipeline)
+                 multi_label=False):
+
+        self.multi_label = multi_label
+
+        self.use_mosaic = any([_['type'] == "Mosaic" for _ in pipeline])
+        if self.use_mosaic:
+            assert sum([_['type'] == "Mosaic" for _ in pipeline]) == 1
+            mosaic_at = [_['type'] == "Mosaic" for _ in pipeline].index(True)
+            mosaic = pipeline[mosaic_at]
+            self.mosaic_prob = mosaic.get("p", 0.5)
+            self.mosaic_center = mosaic.get("center", (0.25, 0.75))
+            self.load_pipeline = Compose(pipeline[:mosaic_at])
+            self.pipeline = Compose(pipeline[mosaic_at + 1:])
+        else:
+            self.pipeline = Compose(pipeline)
         self.img_dir = img_dir
         self.img_suffix = img_suffix
         self.ann_dir = ann_dir
         self.seg_map_suffix = seg_map_suffix
         self.split = split
+        if self.split == "None":
+            self.split = None
         self.data_root = data_root
         self.test_mode = test_mode
         self.ignore_index = ignore_index
@@ -129,6 +150,8 @@ class CustomDataset(Dataset):
         self.img_infos = self.load_annotations(self.img_dir, self.img_suffix,
                                                self.ann_dir,
                                                self.seg_map_suffix, self.split)
+        self.keep_empty_prob = keep_empty_prob
+        self.get_resample_weight()
 
     def __len__(self):
         """Total number of samples of data."""
@@ -153,21 +176,16 @@ class CustomDataset(Dataset):
 
         img_infos = []
         if split is not None:
-            lines = mmcv.list_from_file(
-                split, file_client_args=self.file_client_args)
-            for line in lines:
-                img_name = line.strip()
-                img_info = dict(filename=img_name + img_suffix)
-                if ann_dir is not None:
-                    seg_map = img_name + seg_map_suffix
-                    img_info['ann'] = dict(seg_map=seg_map)
-                img_infos.append(img_info)
+            with open(split) as f:
+                for line in f:
+                    img_name = line.strip()
+                    img_info = dict(filename=img_name + img_suffix)
+                    if ann_dir is not None:
+                        seg_map = img_name + seg_map_suffix
+                        img_info['ann'] = dict(seg_map=seg_map)
+                    img_infos.append(img_info)
         else:
-            for img in self.file_client.list_dir_or_file(
-                    dir_path=img_dir,
-                    list_dir=False,
-                    suffix=img_suffix,
-                    recursive=True):
+            for img in mmcv.scandir(img_dir, img_suffix, recursive=True):
                 img_info = dict(filename=img)
                 if ann_dir is not None:
                     seg_map = img.replace(img_suffix, seg_map_suffix)
@@ -212,6 +230,8 @@ class CustomDataset(Dataset):
         if self.test_mode:
             return self.prepare_test_img(idx)
         else:
+            if self.resample is not None:
+                idx = self.resample(idx)
             return self.prepare_train_img(idx)
 
     def prepare_train_img(self, idx):
@@ -225,11 +245,62 @@ class CustomDataset(Dataset):
                 introduced by pipeline.
         """
 
-        img_info = self.img_infos[idx]
-        ann_info = self.get_ann_info(idx)
-        results = dict(img_info=img_info, ann_info=ann_info)
-        self.pre_pipeline(results)
-        return self.pipeline(results)
+        def random_crop(img, w, h):
+            x = int(np.random.randint(0, img.shape[1] - w, 1))
+            y = int(np.random.randint(0, img.shape[0] - h, 1))
+            return x, x + w, y, y + h
+
+        if self.use_mosaic and np.random.rand() < self.mosaic_prob:
+            idxes = [idx] + np.random.randint(0, len(self), 3).tolist()
+            results_list = []
+            for idx in idxes:
+                img_info = self.img_infos[idx]
+                ann_info = self.get_ann_info(idx)
+                results = dict(img_info=img_info, ann_info=ann_info)
+                self.pre_pipeline(results)
+                results_list.append(self.load_pipeline(results))
+            results = results_list[0]
+            img = results['img'].copy(); img[:] = 0
+            masks = {k: results[k].copy() * 0 + 255 for k in results['seg_fields']}
+            center_x = int(round(np.random.uniform(*self.mosaic_center) * img.shape[1]))
+            center_y = int(round(np.random.uniform(*self.mosaic_center) * img.shape[0]))
+            for i in range(4):
+                if i == 0:
+                    x1, x2, y1, y2 = random_crop(results_list[i]['img'], center_x, center_y)
+                    img[:center_y,:center_x] = results_list[i]['img'][y1:y2, x1:x2]
+                    for k in masks:
+                        masks[k][:center_y,:center_x] = results_list[i][k][y1:y2, x1:x2]
+                elif i == 1:
+                    x1, x2, y1, y2 = random_crop(results_list[i]['img'], img.shape[1] - center_x, center_y)
+                    img[:center_y,center_x:] = results_list[i]['img'][y1:y2, x1:x2]
+                    for k in masks:
+                        masks[k][:center_y,center_x:] = results_list[i][k][y1:y2, x1:x2]
+                elif i == 2:
+                    x1, x2, y1, y2 = random_crop(results_list[i]['img'], center_x, img.shape[0] - center_y)
+                    img[center_y:,:center_x] = results_list[i]['img'][y1:y2, x1:x2]
+                    for k in masks:
+                        masks[k][center_y:,:center_x] = results_list[i][k][y1:y2, x1:x2]
+                elif i == 3:
+                    x1, x2, y1, y2 = random_crop(results_list[i]['img'], img.shape[1] - center_x, img.shape[0] - center_y)
+                    img[center_y:,center_x:] = results_list[i]['img'][y1:y2, x1:x2]
+                    for k in masks:
+                        masks[k][center_y:,center_x:] = results_list[i][k][y1:y2, x1:x2]
+            results['img'] = img
+            for k in masks:
+                results[k] = masks[k]
+            return self.pipeline(results)
+        elif self.use_mosaic:
+            img_info = self.img_infos[idx]
+            ann_info = self.get_ann_info(idx)
+            results = dict(img_info=img_info, ann_info=ann_info)
+            self.pre_pipeline(results)
+            return self.pipeline(self.load_pipeline(results))
+        else:
+            img_info = self.img_infos[idx]
+            ann_info = self.get_ann_info(idx)
+            results = dict(img_info=img_info, ann_info=ann_info)
+            self.pre_pipeline(results)
+            return self.pipeline(results)
 
     def prepare_test_img(self, idx):
         """Get testing data after pipeline.
@@ -243,13 +314,61 @@ class CustomDataset(Dataset):
         """
 
         img_info = self.img_infos[idx]
-        results = dict(img_info=img_info)
+        ann_info = self.get_ann_info(idx)
+        results = dict(img_info=img_info, ann_info=ann_info)
         self.pre_pipeline(results)
         return self.pipeline(results)
 
-    def format_results(self, results, imgfile_prefix, indices=None, **kwargs):
-        """Place holder to format result to dataset specific output."""
-        raise NotImplementedError
+    def format_results(self, results, imgfile_prefix=None, indices = None, **kwargs):
+        """Format the results into dir (standard format for Cityscapes
+        evaluation).
+        Args:
+            results (list): Testing results of the dataset.
+            imgfile_prefix (str | None): The prefix of images files. It
+                includes the file path and the prefix of filename, e.g.,
+                "a/b/prefix". If not specified, a temp file will be created.
+                Default: None.
+            to_label_id (bool): whether convert output to label_id for
+                submission. Default: False
+        Returns:
+            tuple: (result_files, tmp_dir), result_files is a list containing
+                the image paths, tmp_dir is the temporal directory created
+                for saving json/png files when img_prefix is not specified.
+        """
+        result_files = []
+        for res, idx in zip(results, indices):
+            if len(res.shape) == 3 and not np.issubdtype(res.dtype, np.integer):
+                result_file = osp.join(imgfile_prefix, self.img_infos[idx]["filename"][:-4] + ".png")
+                if not osp.exists(osp.dirname(result_file)):
+                    os.system(f"mkdir -p {osp.dirname(result_file)}")
+                cv2.imwrite(result_file, (res * 65535).astype(np.uint16))
+            else:
+                result_file = osp.join(imgfile_prefix, self.img_infos[idx]["filename"][:-4] + ".png")
+                if not osp.exists(osp.dirname(result_file)):
+                    os.system(f"mkdir -p {osp.dirname(result_file)}")
+                Image.fromarray(res.astype(np.uint8)).save(result_file)
+            result_files.append(result_file)
+
+        return result_files
+
+    def get_resample_weight(self):
+        if self.multi_label and self.keep_empty_prob != 1:
+            probs = []
+            for idx in range(len(self)):
+                gt = self.get_gt_seg_map_by_idx(idx)
+                probs.append(self.keep_empty_prob if gt.sum() == 0 else 1)
+            probs = np.array(probs)
+            probs /= probs.sum()
+        else:
+            probs = None
+        self.probs = probs
+
+    def resample(self, idx):
+        if self.probs is None:
+            return idx
+        else:
+            return np.random.choice(len(self), p = self.probs)
+
 
     def get_gt_seg_map_by_idx(self, index):
         """Get one ground truth segmentation map for evaluation."""
@@ -274,7 +393,7 @@ class CustomDataset(Dataset):
             self.gt_seg_map_loader(results)
             yield results['gt_semantic_seg']
 
-    def pre_eval(self, preds, indices):
+    def pre_eval(self, preds, loss, indices):
         """Collect eval result from each iteration.
 
         Args:
@@ -297,19 +416,24 @@ class CustomDataset(Dataset):
 
         for pred, index in zip(preds, indices):
             seg_map = self.get_gt_seg_map_by_idx(index)
-            pre_eval_results.append(
-                intersect_and_union(
-                    pred,
-                    seg_map,
-                    len(self.CLASSES),
-                    self.ignore_index,
-                    # as the labels has been converted when dataset initialized
-                    # in `get_palette_for_custom_classes ` this `label_map`
-                    # should be `dict()`, see
-                    # https://github.com/open-mmlab/mmsegmentation/issues/1415
-                    # for more ditails
-                    label_map=dict(),
-                    reduce_zero_label=self.reduce_zero_label))
+            if self.multi_label:
+                ious = []
+                for i in range(len(self.CLASSES)):
+                    iou = intersect_and_union(pred[...,i], seg_map[...,i], 2,
+                                        self.ignore_index, self.label_map,
+                                        self.reduce_zero_label)
+                    ious.append(iou)
+                ious = tuple([torch.stack([_[i] for _ in ious], 0)[:,1] for i in range(len(ious[0]))])
+                pre_eval_results.append(ious)
+            else:
+                pre_eval_results.append(
+                    intersect_and_union(pred, seg_map, len(self.CLASSES),
+                                        self.ignore_index, self.label_map,
+                                        self.reduce_zero_label))
+
+        for i in range(len(pre_eval_results)):
+            pre_eval_results[i] = list(pre_eval_results[i])
+            pre_eval_results[i].append(loss)
 
         return pre_eval_results
 
@@ -409,7 +533,7 @@ class CustomDataset(Dataset):
         """
         if isinstance(metric, str):
             metric = [metric]
-        allowed_metrics = ['mIoU', 'mDice', 'mFscore']
+        allowed_metrics = ['mIoU', 'mDice', 'mFscore', 'imDice', 'imIoU', 'imFscore']
         if not set(metric).issubset(set(allowed_metrics)):
             raise KeyError('metric {} is not supported'.format(metric))
 
@@ -426,7 +550,7 @@ class CustomDataset(Dataset):
                 num_classes,
                 self.ignore_index,
                 metric,
-                label_map=dict(),
+                label_map=self.label_map,
                 reduce_zero_label=self.reduce_zero_label)
         # test a list of pre_eval_results
         else:
@@ -440,12 +564,16 @@ class CustomDataset(Dataset):
 
         # summary table
         ret_metrics_summary = OrderedDict({
-            ret_metric: np.round(np.nanmean(ret_metric_value) * 100, 2)
+            ret_metric: (np.round(np.nanmean(ret_metric_value) * 100, 2) if "loss" not in ret_metric else np.round(np.nanmean(ret_metric_value), 5))
             for ret_metric, ret_metric_value in ret_metrics.items()
         })
 
         # each class table
         ret_metrics.pop('aAcc', None)
+        ret_metrics.pop('fwIoU', None)
+        for key in list(ret_metrics.keys()):
+            if "loss" in key:
+                ret_metrics.pop(key, None)
         ret_metrics_class = OrderedDict({
             ret_metric: np.round(ret_metric_value * 100, 2)
             for ret_metric, ret_metric_value in ret_metrics.items()
@@ -462,6 +590,10 @@ class CustomDataset(Dataset):
         for key, val in ret_metrics_summary.items():
             if key == 'aAcc':
                 summary_table_data.add_column(key, [val])
+            elif key == 'fwIoU':
+                summary_table_data.add_column(key, [val])
+            elif "loss" in key:
+                summary_table_data.add_column(key, [val])
             else:
                 summary_table_data.add_column('m' + key, [val])
 
@@ -474,6 +606,10 @@ class CustomDataset(Dataset):
         for key, value in ret_metrics_summary.items():
             if key == 'aAcc':
                 eval_results[key] = value / 100.0
+            elif key == 'fwIoU':
+                eval_results[key] = value / 100.0
+            elif "loss" in key:
+                eval_results[key] = value
             else:
                 eval_results['m' + key] = value / 100.0
 
