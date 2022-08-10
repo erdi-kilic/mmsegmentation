@@ -73,9 +73,6 @@ class CustomDataset(Dataset):
             Default: None
         gt_seg_map_loader_cfg (dict, optional): build LoadAnnotations to
             load gt for evaluation, load from disk by default. Default: None.
-        file_client_args (dict): Arguments to instantiate a FileClient.
-            See :class:`mmcv.fileio.FileClient` for details.
-            Defaults to ``dict(backend='disk')``.
     """
 
     CLASSES = None
@@ -129,9 +126,6 @@ class CustomDataset(Dataset):
         self.gt_seg_map_loader = LoadAnnotations(
         ) if gt_seg_map_loader_cfg is None else LoadAnnotations(
             **gt_seg_map_loader_cfg)
-
-        self.file_client_args = file_client_args
-        self.file_client = mmcv.FileClient.infer_client(self.file_client_args)
 
         if test_mode:
             assert self.CLASSES is not None, \
@@ -494,16 +488,7 @@ class CustomDataset(Dataset):
 
         elif palette is None:
             if self.PALETTE is None:
-                # Get random state before set seed, and restore
-                # random state later.
-                # It will prevent loss of randomness, as the palette
-                # may be different in each iteration if not specified.
-                # See: https://github.com/open-mmlab/mmdetection/issues/5844
-                state = np.random.get_state()
-                np.random.seed(42)
-                # random palette
                 palette = np.random.randint(0, 255, size=(len(class_names), 3))
-                np.random.set_state(state)
             else:
                 palette = self.PALETTE
 
