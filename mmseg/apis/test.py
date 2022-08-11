@@ -125,7 +125,7 @@ def single_gpu_test(model,
         if pre_eval:
             # TODO: adapt samples_per_gpu > 1.
             # only samples_per_gpu=1 valid now
-            result = dataset.pre_eval(result, indices=batch_indices)
+            result = dataset.pre_eval(result, loss=loss, indices=batch_indices)
             results.extend(result)
         else:
             results.extend(result)
