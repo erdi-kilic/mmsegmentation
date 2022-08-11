@@ -119,7 +119,7 @@ class SMPUnet(BaseSegmentor):
         if transunet is not None:
             self.backbone = TransUnetEncoderWrapper(self.backbone, transunet)
 
-        self.decode_head = smp.unet.decoder.UnetDecoder(
+        self.decode_head = smp.decoders.unet.decoder.UnetDecoder(
             encoder_channels=self.backbone.out_channels,
             decoder_channels=decoder_channels[:encoder_depth],
             n_blocks=encoder_depth,
@@ -452,7 +452,7 @@ class SMPUnetPlusPlus(SMPUnet):
         decoder_use_batchnorm = decode_head.get("use_batchnorm", True)
         decoder_attention_type = decode_head.get("attention_type", None)
 
-        self.decode_head = smp.unetplusplus.decoder.UnetPlusPlusDecoder(
+        self.decode_head = smp.decoders.unetplusplus.decoder.UnetPlusPlusDecoder(
             encoder_channels=self.backbone.out_channels,
             decoder_channels=decoder_channels[:encoder_depth],
             n_blocks=encoder_depth,
