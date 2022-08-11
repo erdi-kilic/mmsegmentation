@@ -1,11 +1,11 @@
 norm_cfg = dict(type='SyncBN', requires_grad=True)
-custom_imports = dict(imports='mmcls.models', allow_failed_imports=False)
+#custom_imports = dict(imports='mmcls.models', allow_failed_imports=False)
 checkpoint_file = 'https://download.openmmlab.com/mmclassification/v0/convnext/downstream/convnext-base_3rdparty_32xb128-noema_in1k_20220301-2a0ee547.pth'  # noqa
 model = dict(
     type='EncoderDecoder',
     pretrained=None,
     backbone=dict(
-        type='mmcls.ConvNeXt',
+        type='ConvNeXt',
         arch='base',
         out_indices=[0, 1, 2, 3],
         drop_path_rate=0.4,
