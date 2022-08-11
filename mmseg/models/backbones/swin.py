@@ -733,7 +733,14 @@ class SwinTransformer(BaseModule):
                         nH2, L2).permute(1, 0).contiguous()
 
             # load state_dict
-            load_state_dict(self, state_dict, strict=False, logger=logger)
+            if self.in_channels != 3:
+                cur_state_dict = self.state_dict()
+                for k in state_dict.keys():
+                    if k not in cur_state_dict:
+                        continue
+                    if len(state_dict[k].shape) > 1 and state_dict[k].shape[1] == 3 and cur_state_dict[k].shape[1] == self.in_channels:
+                        state_dict[k] = torch.cat([state_dict[k], *[state_dict[k][:,0:1] for _ in range(self.in_channels - 3)]], 1)
+            self.load_state_dict(state_dict, False)
 
     def forward(self, x):
         x, hw_shape = self.patch_embed(x)

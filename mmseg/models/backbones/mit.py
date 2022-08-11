@@ -355,8 +355,8 @@ class MixVisionTransformer(BaseModule):
                  act_cfg=dict(type='GELU'),
                  norm_cfg=dict(type='LN', eps=1e-6),
                  pretrained=None,
-                 init_cfg=None,
-                 with_cp=False):
+                 with_cp=False,
+                 init_cfg=None):
         super(MixVisionTransformer, self).__init__(init_cfg=init_cfg)
 
         assert not (init_cfg and pretrained), \

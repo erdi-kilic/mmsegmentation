@@ -189,9 +189,6 @@ class EncoderDecoder(BaseSegmentor):
                 count_mat.cpu().detach().numpy()).to(device=img.device)
         preds = preds / count_mat
         if rescale:
-            # remove padding area
-            resize_shape = img_meta[0]['img_shape'][:2]
-            preds = preds[:, :, :resize_shape[0], :resize_shape[1]]
             preds = resize(
                 preds,
                 size=img_meta[0]['ori_shape'][:2],
@@ -209,9 +206,6 @@ class EncoderDecoder(BaseSegmentor):
             if torch.onnx.is_in_onnx_export():
                 size = img.shape[2:]
             else:
-                # remove padding area
-                resize_shape = img_meta[0]['img_shape'][:2]
-                seg_logit = seg_logit[:, :, :resize_shape[0], :resize_shape[1]]
                 size = img_meta[0]['ori_shape'][:2]
             if 'pad_shape' in img_meta[0] and img_meta[0]["pad_shape"] != img_meta[0]["img_shape"]:
                 seg_logit = seg_logit[...,:img_meta[0]["img_shape"][0],:img_meta[0]["img_shape"][1]]

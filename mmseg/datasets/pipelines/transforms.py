@@ -14,11 +14,6 @@ from numpy import random
 import traceback
 
 try:
-    from imagecorruptions import corrupt
-except ImportError:
-    corrupt = None
-
-try:
     import albumentations
     from albumentations import Compose
 except ImportError:
