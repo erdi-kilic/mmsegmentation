@@ -4,11 +4,7 @@
 import torch
 import torch.nn as nn
 from mmcv.cnn import ConvModule
-
-try:
-    from mmcv.ops import point_sample
-except ModuleNotFoundError:
-    point_sample = None
+from mmcv.ops import point_sample
 
 from mmseg.models.builder import HEADS
 from mmseg.ops import resize
@@ -18,15 +14,12 @@ from .cascade_decode_head import BaseCascadeDecodeHead
 
 def calculate_uncertainty(seg_logits):
     """Estimate uncertainty based on seg logits.
-
     For each location of the prediction ``seg_logits`` we estimate
     uncertainty as the difference between top first and top second
     predicted logits.
-
     Args:
         seg_logits (Tensor): Semantic segmentation logits,
             shape (batch_size, num_classes, height, width).
-
     Returns:
         scores (Tensor): T uncertainty scores with the most uncertain
             locations having the highest uncertainty score, shape (
@@ -39,13 +32,11 @@ def calculate_uncertainty(seg_logits):
 @HEADS.register_module()
 class PointHead(BaseCascadeDecodeHead):
     """A mask point head use in PointRend.
-
     This head is implemented of `PointRend: Image Segmentation as
     Rendering <https://arxiv.org/abs/1912.08193>`_.
     ``PointHead`` use shared multi-layer perceptron (equivalent to
     nn.Conv1d) to predict the logit of input points. The fine-grained feature
     and coarse feature will be concatenate together for predication.
-
     Args:
         num_fcs (int): Number of fc layers in the head. Default: 3.
         in_channels (int): Number of input channels. Default: 256.
@@ -79,9 +70,6 @@ class PointHead(BaseCascadeDecodeHead):
             init_cfg=dict(
                 type='Normal', std=0.01, override=dict(name='fc_seg')),
             **kwargs)
-        if point_sample is None:
-            raise RuntimeError('Please install mmcv-full for '
-                               'point_sample ops')
 
         self.num_fcs = num_fcs
         self.coarse_pred_each_layer = coarse_pred_each_layer
@@ -130,12 +118,10 @@ class PointHead(BaseCascadeDecodeHead):
 
     def _get_fine_grained_point_feats(self, x, points):
         """Sample from fine grained features.
-
         Args:
             x (list[Tensor]): Feature pyramid from by neck or backbone.
             points (Tensor): Point coordinates, shape (batch_size,
                 num_points, 2).
-
         Returns:
             fine_grained_feats (Tensor): Sampled fine grained feature,
                 shape (batch_size, sum(channels of x), num_points).
@@ -154,12 +140,10 @@ class PointHead(BaseCascadeDecodeHead):
 
     def _get_coarse_point_feats(self, prev_output, points):
         """Sample from fine grained features.
-
         Args:
             prev_output (list[Tensor]): Prediction of previous decode head.
             points (Tensor): Point coordinates, shape (batch_size,
                 num_points, 2).
-
         Returns:
             coarse_feats (Tensor): Sampled coarse feature, shape (batch_size,
                 num_classes, num_points).
@@ -184,7 +168,6 @@ class PointHead(BaseCascadeDecodeHead):
             gt_semantic_seg (Tensor): Semantic segmentation masks
                 used if the architecture supports semantic segmentation task.
             train_cfg (dict): The training config.
-
         Returns:
             dict[str, Tensor]: a dictionary of loss components
         """
@@ -210,7 +193,6 @@ class PointHead(BaseCascadeDecodeHead):
 
     def forward_test(self, inputs, prev_output, img_metas, test_cfg):
         """Forward function for testing.
-
         Args:
             inputs (list[Tensor]): List of multi-level img features.
             prev_output (Tensor): The output of previous decode head.
@@ -220,7 +202,6 @@ class PointHead(BaseCascadeDecodeHead):
                 For details on the values of these keys see
                 `mmseg/datasets/pipelines/formatting.py:Collect`.
             test_cfg (dict): The testing config.
-
         Returns:
             Tensor: Output segmentation map.
         """
@@ -264,24 +245,20 @@ class PointHead(BaseCascadeDecodeHead):
             loss['point' + loss_module.loss_name] = loss_module(
                 point_logits, point_label, ignore_index=self.ignore_index)
 
-        loss['acc_point'] = accuracy(
-            point_logits, point_label, ignore_index=self.ignore_index)
+        loss['acc_point'] = accuracy(point_logits, point_label)
         return loss
 
     def get_points_train(self, seg_logits, uncertainty_func, cfg):
         """Sample points for training.
-
         Sample points in [0, 1] x [0, 1] coordinate space based on their
         uncertainty. The uncertainties are calculated for each point using
         'uncertainty_func' function that takes point's logit prediction as
         input.
-
         Args:
             seg_logits (Tensor): Semantic segmentation logits, shape (
                 batch_size, num_classes, height, width).
             uncertainty_func (func): uncertainty calculation function.
             cfg (dict): Training config of point head.
-
         Returns:
             point_coords (Tensor): A tensor of shape (batch_size, num_points,
                 2) that contains the coordinates of ``num_points`` sampled
@@ -324,15 +301,12 @@ class PointHead(BaseCascadeDecodeHead):
 
     def get_points_test(self, seg_logits, uncertainty_func, cfg):
         """Sample points for testing.
-
         Find ``num_points`` most uncertain points from ``uncertainty_map``.
-
         Args:
             seg_logits (Tensor): A tensor of shape (batch_size, num_classes,
                 height, width) for class-specific or class-agnostic prediction.
             uncertainty_func (func): uncertainty calculation function.
             cfg (dict): Testing config of point head.
-
         Returns:
             point_indices (Tensor): A tensor of shape (batch_size, num_points)
                 that contains indices from [0, height x width) of the most
