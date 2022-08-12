@@ -13,7 +13,6 @@ from ..losses import accuracy
 
 class BaseDecodeHead(BaseModule, metaclass=ABCMeta):
     """Base class for BaseDecodeHead.
-
     Args:
         in_channels (int|Sequence[int]): Input channels.
         channels (int): Channels after modules, before conv_seg.
@@ -93,7 +92,6 @@ class BaseDecodeHead(BaseModule, metaclass=ABCMeta):
         else:
             raise TypeError(f'loss_decode must be a dict or sequence of dict,\
                 but got {type(loss_decode)}')
-
         if sampler is not None:
             self.sampler = build_pixel_sampler(sampler, context=self)
         else:
@@ -115,12 +113,10 @@ class BaseDecodeHead(BaseModule, metaclass=ABCMeta):
 
     def _init_inputs(self, in_channels, in_index, input_transform):
         """Check and initialize input transforms.
-
         The in_channels, in_index and input_transform must match.
         Specifically, when input_transform is None, only single feature map
         will be selected. So in_channels and in_index must be of type int.
         When input_transform
-
         Args:
             in_channels (int|Sequence[int]): Input channels.
             in_index (int|Sequence[int]): Input feature index.
@@ -153,10 +149,8 @@ class BaseDecodeHead(BaseModule, metaclass=ABCMeta):
 
     def _transform_inputs(self, inputs):
         """Transform inputs for decoder.
-
         Args:
             inputs (list[Tensor]): List of multi-level img features.
-
         Returns:
             Tensor: The transformed inputs
         """
@@ -196,7 +190,6 @@ class BaseDecodeHead(BaseModule, metaclass=ABCMeta):
             gt_semantic_seg (Tensor): Semantic segmentation masks
                 used if the architecture supports semantic segmentation task.
             train_cfg (dict): The training config.
-
         Returns:
             dict[str, Tensor]: a dictionary of loss components
         """
@@ -206,7 +199,6 @@ class BaseDecodeHead(BaseModule, metaclass=ABCMeta):
 
     def forward_test(self, inputs, img_metas, test_cfg):
         """Forward function for testing.
-
         Args:
             inputs (list[Tensor]): List of multi-level img features.
             img_metas (list[dict]): List of image info dict where each dict
@@ -215,7 +207,6 @@ class BaseDecodeHead(BaseModule, metaclass=ABCMeta):
                 For details on the values of these keys see
                 `mmseg/datasets/pipelines/formatting.py:Collect`.
             test_cfg (dict): The testing config.
-
         Returns:
             Tensor: Output segmentation map.
         """
@@ -260,7 +251,5 @@ class BaseDecodeHead(BaseModule, metaclass=ABCMeta):
                     seg_label,
                     weight=seg_weight,
                     ignore_index=self.ignore_index)
-
-        loss['acc_seg'] = accuracy(
-            seg_logit, seg_label, ignore_index=self.ignore_index)
+        loss['acc_seg'] = accuracy(seg_logit, seg_label)
         return loss
