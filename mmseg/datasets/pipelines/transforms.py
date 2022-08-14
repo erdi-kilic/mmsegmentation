@@ -1289,7 +1289,7 @@ class Albu:
         repr_str = self.__class__.__name__ + f'(transforms={self.transforms})'
         return repr_str
 
-
+@PIPELINES.register_module()
 class RandomCutOut(object):
     """CutOut operation.
 
