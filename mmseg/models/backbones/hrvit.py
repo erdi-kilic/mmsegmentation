@@ -768,7 +768,7 @@ class HRViT(nn.Module):
     def __init__(
         self,
         #### HRViT Stem Config ####
-        in_channels: int = 3,
+        in_chans: int = 3,
         stride: int = 4,
         channels: int = 64,
         #### Branch Config ####
@@ -834,7 +834,7 @@ class HRViT(nn.Module):
 
         # build stem
         self.stem = HRViTStem(
-            in_channels=in_channels, out_channels=channels, kernel_size=3, stride=4,
+            in_channels=in_chans, out_channels=channels, kernel_size=3, stride=4,
             norm_cfg=norm_cfg,
         )
 
