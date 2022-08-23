@@ -5,6 +5,7 @@ import math
 import time
 from functools import lru_cache
 from typing import List, Optional, Tuple, Dict
+import warnings
 
 import numpy as np
 import torch
@@ -805,8 +806,16 @@ class HRViT(nn.Module):
         head_dropout: float = 0.1,
         #### Gradient Checkpointing #####
         with_cp: bool = False,
+        pretrained=None
     ) -> None:
         super().__init__()
+
+        if isinstance(pretrained, str) or pretrained is None:
+            warnings.warn('DeprecationWarning: pretrained is a deprecated, '
+                          'please use "init_cfg" instead')
+        else:
+            raise TypeError('pretrained must be a str or None')
+        self.pretrained = pretrained
 
         self.features = []
         self.ws_list = ws_list
@@ -877,7 +886,8 @@ class HRViT(nn.Module):
     def no_weight_decay(self):
         return {"pos_embed", "cls_token"}
 
-    def init_weights(self, pretrained=None):
+    def init_weights(self):
+        pretrained = self.pretrained
         def _init_weights(m):
             if isinstance(m, nn.Linear):
                 trunc_normal_(m.weight, std=.02)
