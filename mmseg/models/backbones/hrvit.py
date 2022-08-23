@@ -821,6 +821,7 @@ class HRViT(nn.Module):
         self.ws_list = ws_list
         self.head_dropout = head_dropout
         self.with_cp = with_cp
+        self.in_chans = in_chans
 
         # calculate drop path rates
         total_blocks = sum(max(b) for b in block_list)
