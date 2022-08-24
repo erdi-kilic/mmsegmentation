@@ -280,6 +280,7 @@ class CSWin(nn.Module):
                           'please use "init_cfg" instead')
         else:
             raise TypeError('pretrained must be a str or None')
+            
         self.pretrained = pretrained
         self.in_chans = in_chans
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models

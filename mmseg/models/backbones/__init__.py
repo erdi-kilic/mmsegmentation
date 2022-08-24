@@ -1,4 +1,5 @@
 # Copyright (c) OpenMMLab. All rights reserved.
+import imp
 from .beit import BEiT
 from .bisenetv1 import BiSeNetV1
 from .bisenetv2 import BiSeNetV2
@@ -24,6 +25,8 @@ from .cswin import CSWin
 from .convnext import ConvNeXt
 from .efficientnet import EfficientNet
 from .hrvit import hrvit_b1, hrvit_b2, hrvit_b3
+from .hornet import HorNet
+from .mpvit import MPViT
 
 __all__ = [
     'ResNet', 'ResNetV1c', 'ResNetV1d', 'ResNeXt', 'HRNet', 'FastSCNN',
@@ -31,5 +34,5 @@ __all__ = [
     'VisionTransformer', 'SwinTransformer', 'MixVisionTransformer',
     'BiSeNetV1', 'BiSeNetV2', 'ICNet', 'TIMMBackbone', 'ERFNet', 'PCPVT',
     'SVT', 'STDCNet', 'STDCContextPathNet', 'BEiT', 'MAE',  'CSWin', 'ConvNeXt', "EfficientNet",
-    'hrvit_b1', 'hrvit_b2', 'hrvit_b3',
+    'hrvit_b1', 'hrvit_b2', 'hrvit_b3', 'HorNet', 'MPViT'
 ]
