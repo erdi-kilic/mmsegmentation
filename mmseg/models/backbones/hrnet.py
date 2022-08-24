@@ -217,12 +217,15 @@ class HRModule(BaseModule):
 @BACKBONES.register_module()
 class HRNet(BaseModule):
     """HRNet backbone.
+
     This backbone is the implementation of `High-Resolution Representations
     for Labeling Pixels and Regions <https://arxiv.org/abs/1904.04514>`_.
+
     Args:
         extra (dict): Detailed configuration for each stage of HRNet.
             There must be 4 stages, the configuration for each stage must have
             5 keys:
+
                 - num_modules (int): The number of HRModule in this stage.
                 - num_branches (int): The number of branches in the HRModule.
                 - block (str): The type of convolution block.
@@ -250,6 +253,7 @@ class HRNet(BaseModule):
         pretrained (str, optional): Model pretrained path. Default: None.
         init_cfg (dict or list[dict], optional): Initialization config dict.
             Default: None.
+
     Example:
         >>> from mmseg.models import HRNet
         >>> import torch
